@@ -1,0 +1,42 @@
+{
+  "adsense_publisher_id": "pub-7605696144276072",
+  "trip_alliance_id": "10882341",
+  "blogs": [
+    {
+      "id": "travel_guide",
+      "name": "떠나볼 가이드",
+      "url": "https://genesislkh21.blogspot.com",
+      "platform": "blogger",
+      "blog_id": "2592561701693494703",
+      "enabled": true,
+      "mode": "REVIEW",
+      "daily_limit": 2,
+      "min_chars": 1300,
+      "allowed_labels": ["해외여행", "공항규정", "항공권", "여행준비"]
+    },
+    {
+      "id": "office_note",
+      "name": "아빠의 사무실 해결 노트",
+      "url": "",
+      "platform": "blogger",
+      "blog_id": "YOUR_OFFICE_NOTE_BLOG_ID",
+      "enabled": false,
+      "mode": "FROZEN",
+      "daily_limit": 0,
+      "min_chars": 1300,
+      "allowed_labels": []
+    },
+    {
+      "id": "naver_main",
+      "name": "네이버 블로그",
+      "url": "",
+      "platform": "naver_draft",
+      "blog_id": "",
+      "enabled": true,
+      "mode": "SEMI_AUTO",
+      "daily_limit": 1,
+      "min_chars": 1200,
+      "output_dir": "outputs/naver"
+    }
+  ]
+}
