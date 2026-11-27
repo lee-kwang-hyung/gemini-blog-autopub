@@ -3,13 +3,17 @@ import json
 import os
 import random
 import re
+import socket
 import time
 import requests
 from google import genai
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from qa_and_sanitizer import run_triple_qa
+
+socket.setdefaulttimeout(60)
 
 TOPICS = [
     ("인천공항 액체류 반입 규정 및 기내 수하물 통과 기준", "공항규정", "airport security luggage"),
@@ -19,32 +23,50 @@ TOPICS = [
     ("항공권 이름 철자 오류 발견 시 항공사별 변경 기준 정리", "항공권", "flight ticket passport"),
 ]
 
-DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-MAX_API_RETRIES = 5
-RETRY_BACKOFF_SECONDS = [5, 10, 20, 30, 45]
+MODEL_CANDIDATES = [
+    os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+]
+# 중복 제거 (순서 유지)
+MODEL_CANDIDATES = list(dict.fromkeys(MODEL_CANDIDATES))
+RETRIES_PER_MODEL = 2
+RETRY_DELAY_SECONDS = 5
+API_TIMEOUT_MS = 60_000
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
 
 
 def fetch_pexels_image(query: str) -> str:
     api_key = os.getenv("PEXELS_API_KEY", "").strip()
     if not api_key:
         return ""
-    res = requests.get(
-        "https://api.pexels.com/v1/search",
-        headers={"Authorization": api_key},
-        params={"query": query, "per_page": 5, "orientation": "landscape"},
-        timeout=15,
-    )
-    if res.status_code != 200:
+    try:
+        res = requests.get(
+            "https://api.pexels.com/v1/search",
+            headers={"Authorization": api_key},
+            params={"query": query, "per_page": 5, "orientation": "landscape"},
+            timeout=15,
+        )
+        if res.status_code != 200:
+            return ""
+        photos = res.json().get("photos", [])
+        if not photos:
+            return ""
+        chosen = random.choice(photos)
+        return chosen.get("src", {}).get("large", "")
+    except Exception as err:
+        log(f"[Pexels] 이미지 조회 생략: {err}")
         return ""
-    photos = res.json().get("photos", [])
-    if not photos:
-        return ""
-    chosen = random.choice(photos)
-    return chosen.get("src", {}).get("large", "")
 
 
 def generate_article(topic: str, mode: str, trip_id: str) -> str:
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    client = genai.Client(
+        api_key=os.environ["GEMINI_API_KEY"],
+        http_options=genai_types.HttpOptions(timeout=API_TIMEOUT_MS),
+    )
     affiliate_rule = (
         "절대 쿠팡 파트너스, 트립닷컴, 광고 고지 문구, 외부 제휴 링크, HTML 주석(<!-- -->)을 포함하지 마세요."
         if mode != "APPROVED"
@@ -60,28 +82,26 @@ def generate_article(topic: str, mode: str, trip_id: str) -> str:
 3. {affiliate_rule}
 """
     last_err = None
-    for attempt in range(MAX_API_RETRIES):
-        try:
-            response = client.models.generate_content(
-                model=DEFAULT_GEMINI_MODEL,
-                contents=prompt,
-            )
-            html = (response.text or "").strip()
-            html = re.sub(r"^```html\s*|```$", "", html, flags=re.IGNORECASE).strip()
-            return html
-        except (genai_errors.ServerError, genai_errors.APIError) as err:
-            last_err = err
-            code = getattr(err, "code", None)
-            if code in (429, 500, 502, 503, 504) and attempt < MAX_API_RETRIES - 1:
-                wait_sec = RETRY_BACKOFF_SECONDS[attempt]
-                print(
-                    f"[Gemini] 일시 오류({code}) 발생, {wait_sec}초 후 재시도 "
-                    f"({attempt + 1}/{MAX_API_RETRIES})..."
+    for model_name in MODEL_CANDIDATES:
+        for attempt in range(1, RETRIES_PER_MODEL + 1):
+            try:
+                log(f"[Gemini] 모델 호출 시작: {model_name} (시도 {attempt}/{RETRIES_PER_MODEL})")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
                 )
-                time.sleep(wait_sec)
-                continue
-            raise
-    raise last_err
+                html = (response.text or "").strip()
+                html = re.sub(r"^```html\s*|```$", "", html, flags=re.IGNORECASE).strip()
+                if html:
+                    log(f"[Gemini] 생성 완료: {model_name} (길이 {len(html)}자)")
+                    return html
+                raise RuntimeError(f"Empty response from {model_name}")
+            except (genai_errors.ServerError, genai_errors.APIError, Exception) as err:
+                last_err = err
+                log(f"[Gemini] {model_name} 실패 ({attempt}/{RETRIES_PER_MODEL}): {err}")
+                if attempt < RETRIES_PER_MODEL:
+                    time.sleep(RETRY_DELAY_SECONDS)
+    raise RuntimeError(f"모든 Gemini 모델 호출 실패: {last_err}")
 
 
 def get_blogger_service():
@@ -89,10 +109,11 @@ def get_blogger_service():
     creds = Credentials.from_authorized_user_info(
         creds_info, scopes=["https://www.googleapis.com/auth/blogger"]
     )
-    return build("blogger", "v3", credentials=creds)
+    return build("blogger", "v3", credentials=creds, cache_discovery=False)
 
 
 def publish_blogger(blog: dict, title: str, html: str, label: str, is_draft: bool):
+    log(f"[Blogger] 발행 요청 시작: {blog['name']} (draft={is_draft})")
     service = get_blogger_service()
     body = {
         "kind": "blogger#post",
@@ -102,7 +123,7 @@ def publish_blogger(blog: dict, title: str, html: str, label: str, is_draft: boo
         "labels": [label] if label in blog.get("allowed_labels", []) else ["해외여행"],
     }
     res = service.posts().insert(blogId=blog["blog_id"], body=body, isDraft=is_draft).execute()
-    print(f"[Blogger] 발행 완료 | draft={is_draft} | url={res.get('url', 'DRAFT')}")
+    log(f"[Blogger] 발행 완료 | draft={is_draft} | url={res.get('url', 'DRAFT')}")
 
 
 def save_naver_draft(output_dir: str, title: str, html: str, img_url: str):
@@ -112,20 +133,22 @@ def save_naver_draft(output_dir: str, title: str, html: str, img_url: str):
     img_tag = f'<p><img src="{img_url}" alt="{title}"></p>\n' if img_url else ""
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"<h1>{title}</h1>\n{img_tag}{html}")
-    print(f"[Naver] 10초 복붙용 HTML 저장 완료: {path}")
+    log(f"[Naver] 10초 복붙용 HTML 저장 완료: {path}")
 
 
 def run():
+    log("[START] Gemini Blog Autopub 파이프라인 시작")
     with open("config/blogs.json", "r", encoding="utf-8") as f:
         cfg = json.load(f)
 
     trip_id = cfg.get("trip_alliance_id", "10882341")
     for blog in cfg.get("blogs", []):
         if not blog.get("enabled") or blog.get("mode") == "FROZEN":
-            print(f"[SKIP] {blog['name']} (동결 상태)")
+            log(f"[SKIP] {blog['name']} (동결 상태)")
             continue
 
         topic, label, img_query = random.choice(TOPICS)
+        log(f"[TOPIC] {blog['name']} -> {topic}")
         raw_html = generate_article(topic, blog["mode"], trip_id)
         img_url = fetch_pexels_image(img_query)
         if img_url:
@@ -133,11 +156,13 @@ def run():
 
         if blog["platform"] == "blogger":
             qa = run_triple_qa(topic, raw_html, blog["mode"], blog.get("min_chars", 1300))
-            print(f"[QA] {blog['name']} -> {qa['reason']}")
+            log(f"[QA] {blog['name']} -> {qa['reason']}")
             publish_blogger(blog, topic, qa["html"], label, qa["draft"])
         elif blog["platform"] == "naver_draft":
             qa = run_triple_qa(topic, raw_html, "REVIEW", blog.get("min_chars", 1200))
             save_naver_draft(blog.get("output_dir", "outputs/naver"), topic, qa["html"], img_url)
+
+    log("[DONE] 파이프라인 정상 종료")
 
 
 if __name__ == "__main__":
