@@ -41,7 +41,7 @@ def generate_article(topic: str, mode: str, trip_id: str) -> str:
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     affiliate_rule = (
         "절대 쿠팡 파트너스, 트립닷컴, 광고 고지 문구, 외부 제휴 링크, HTML 주석(<!-- -->)을 포함하지 마세요."
-        if mode == "REVIEW"
+        if mode != "APPROVED"
         else f"글 하단에 트립닷컴 제휴 안내(Alliance ID: {trip_id})를 자연스럽게 1줄 포함할 수 있습니다."
     )
     prompt = f"""
