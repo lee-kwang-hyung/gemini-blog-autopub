@@ -3,8 +3,10 @@ import json
 import os
 import random
 import re
+import time
 import requests
 from google import genai
+from google.genai import errors as genai_errors
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from qa_and_sanitizer import run_triple_qa
@@ -18,6 +20,8 @@ TOPICS = [
 ]
 
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+MAX_API_RETRIES = 5
+RETRY_BACKOFF_SECONDS = [5, 10, 20, 30, 45]
 
 
 def fetch_pexels_image(query: str) -> str:
@@ -55,13 +59,29 @@ def generate_article(topic: str, mode: str, trip_id: str) -> str:
 2. HTML 본문(<p>, <h2>, <h3>, <ul>, <li>, <table>)만 출력하고 ```html 코드펜스는 쓰지 마세요.
 3. {affiliate_rule}
 """
-    response = client.models.generate_content(
-        model=DEFAULT_GEMINI_MODEL,
-        contents=prompt,
-    )
-    html = (response.text or "").strip()
-    html = re.sub(r"^```html\s*|```$", "", html, flags=re.IGNORECASE).strip()
-    return html
+    last_err = None
+    for attempt in range(MAX_API_RETRIES):
+        try:
+            response = client.models.generate_content(
+                model=DEFAULT_GEMINI_MODEL,
+                contents=prompt,
+            )
+            html = (response.text or "").strip()
+            html = re.sub(r"^```html\s*|```$", "", html, flags=re.IGNORECASE).strip()
+            return html
+        except (genai_errors.ServerError, genai_errors.APIError) as err:
+            last_err = err
+            code = getattr(err, "code", None)
+            if code in (429, 500, 502, 503, 504) and attempt < MAX_API_RETRIES - 1:
+                wait_sec = RETRY_BACKOFF_SECONDS[attempt]
+                print(
+                    f"[Gemini] 일시 오류({code}) 발생, {wait_sec}초 후 재시도 "
+                    f"({attempt + 1}/{MAX_API_RETRIES})..."
+                )
+                time.sleep(wait_sec)
+                continue
+            raise
+    raise last_err
 
 
 def get_blogger_service():
