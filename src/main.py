@@ -17,6 +17,8 @@ TOPICS = [
     ("항공권 이름 철자 오류 발견 시 항공사별 변경 기준 정리", "항공권", "flight ticket passport"),
 ]
 
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+
 
 def fetch_pexels_image(query: str) -> str:
     api_key = os.getenv("PEXELS_API_KEY", "").strip()
@@ -54,7 +56,7 @@ def generate_article(topic: str, mode: str, trip_id: str) -> str:
 3. {affiliate_rule}
 """
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=DEFAULT_GEMINI_MODEL,
         contents=prompt,
     )
     html = (response.text or "").strip()
