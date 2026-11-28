@@ -15,6 +15,10 @@ env:
   BLOGGER_CREDENTIALS_JSON: ${{ secrets.BLOGGER_CREDENTIALS_JSON }}
   PYTHONUNBUFFERED: "1"
 
+concurrency:
+  group: gemini-travel-review-writer
+  cancel-in-progress: false
+
 jobs:
   run-autopub:
     runs-on: ubuntu-latest

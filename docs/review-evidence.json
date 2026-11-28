@@ -1,0 +1,18 @@
+{
+  "robots_txt_custom_off": true,
+  "robots_headers_custom_off": true,
+  "ads_txt_exact": true,
+  "layout_clean": null,
+  "quarantine_verified": true,
+  "priority_urls_resolved": null,
+  "posts": [],
+  "admin_evidence": "2026-11-28: Blogger 관리자 게시됨 54→48, 임시보관 18→24. 여섯 제목 상태 확인. 두 맞춤 로봇 스위치 OFF.",
+  "draft_ids": [
+    "2358790464825852127",
+    "8069601392100375138",
+    "7291120338551248217",
+    "3143214705046941338",
+    "6783396808753110773",
+    "1620431145509967201"
+  ]
+}

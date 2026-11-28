@@ -112,9 +112,35 @@ def get_blogger_service():
     return build("blogger", "v3", credentials=creds, cache_discovery=False)
 
 
-def publish_blogger(blog: dict, title: str, html: str, label: str, is_draft: bool):
+def todays_slots(service, blog):
+    # List all current live/scheduled posts, including externally created ones.
+    # Account in Asia/Seoul, regardless of the timezone used in Blogger responses.
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Asia/Seoul")
+    today = datetime.datetime.now(tz).date()
+    seen = set()
+    pages = set()
+    token = None
+    while True:
+        page = service.posts().list(blogId=blog["blog_id"], status=["LIVE", "SCHEDULED"],
+            view="ADMIN", fetchBodies=False, maxResults=500, pageToken=token,
+            fields="nextPageToken,items(id,published)").execute()
+        for item in page.get("items", []):
+            dt = datetime.datetime.fromisoformat(item["published"].replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                raise ValueError("unknown publication timezone")
+            if dt.astimezone(tz).date() == today:
+                seen.add(item["id"])
+        token = page.get("nextPageToken")
+        if not token:
+            return max(0, min(2, int(blog["daily_limit"])) - len(seen))
+        if token in pages:
+            raise ValueError("incomplete publication inventory")
+        pages.add(token)
+
+
+def publish_blogger(service, blog: dict, title: str, html: str, label: str, is_draft: bool):
     log(f"[Blogger] 발행 요청 시작: {blog['name']} (draft={is_draft})")
-    service = get_blogger_service()
     body = {
         "kind": "blogger#post",
         "blog": {"id": blog["blog_id"]},
@@ -147,6 +173,16 @@ def run():
             log(f"[SKIP] {blog['name']} (동결 상태)")
             continue
 
+        if blog["platform"] == "blogger":
+            if (str(blog.get("blog_id")), blog.get("id"), blog.get("mode")) != ("2592561701693494703", "travel_guide", "REVIEW"):
+                continue
+            try:
+                service = get_blogger_service()
+                if not todays_slots(service, blog):
+                    continue
+            except Exception:
+                log("[Blogger] 오늘 공개/예약 수 미확인: 쓰기 보류, 네이버 원고 계속")
+                continue
         topic, label, img_query = random.choice(TOPICS)
         log(f"[TOPIC] {blog['name']} -> {topic}")
         raw_html = generate_article(topic, blog["mode"], trip_id)
@@ -155,9 +191,9 @@ def run():
             raw_html = f'<p><img src="{img_url}" alt="{topic}" style="max-width:100%;height:auto;"></p>\n' + raw_html
 
         if blog["platform"] == "blogger":
-            qa = run_triple_qa(topic, raw_html, blog["mode"], blog.get("min_chars", 1300))
+            qa = run_triple_qa(topic, raw_html, blog["mode"], max(1300, blog.get("min_chars", 1300)), travel_only=True)
             log(f"[QA] {blog['name']} -> {qa['reason']}")
-            publish_blogger(blog, topic, qa["html"], label, qa["draft"])
+            publish_blogger(service, blog, topic, qa["html"], label, qa["draft"])
         elif blog["platform"] == "naver_draft":
             qa = run_triple_qa(topic, raw_html, "REVIEW", blog.get("min_chars", 1200))
             save_naver_draft(blog.get("output_dir", "outputs/naver"), topic, qa["html"], img_url)
